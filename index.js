@@ -4,10 +4,11 @@ require("dotenv").config();
 const jwt = require("jsonwebtoken");
 const app = express();
 const port = process.env.PORT || 5000;
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const res = require("express/lib/response");
 const nodemailer = require("nodemailer");
 const sgTransport = require("nodemailer-sendgrid-transport");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors());
 app.use(express.json());
@@ -71,6 +72,36 @@ function verifyJWT(req, res, next) {
 //   });
 // }
 
+// function sendPaymentConfirmationEmail(booking) {
+//   const { patient, patientName, treatment, date, slot } = booking;
+
+//   var email = {
+//     from: process.env.EMAIL_SENDER,
+//     to: patient,
+//     subject: `We have received your payment for ${treatment} is on ${date}  at ${slot} is confirmed`,
+//     text: `Your payment for this appointment   ${treatment} is on ${date}  at ${slot} is confirmed`,
+//     html: `
+//     <div>
+//     <p> Hello ${patientName},</p>
+//     <h3> Thank your for your payment </h3>
+//     <h3> We have received your payment </h3>
+//     <p>Looking forward to seeing you on ${date}  at ${slot} </p>
+//     <h3> Our Address</h3>
+//     <p>Mirpur, Dhaka</p>
+//     <p> Bangladesh </p>
+//     <a href="https://www.instagram.com/">Unsubscribe</a>
+//     </div>`,
+//   };
+
+//   emailClient.sendMail(email, function (err, info) {
+//     if (err) {
+//       console.log(err);
+//     } else {
+//       console.log("Message sent: ", info.response);
+//     }
+//   });
+// }
+
 async function run() {
   try {
     await client.connect();
@@ -82,6 +113,9 @@ async function run() {
       .collection("bookings");
     const userCollection = client.db("doctors_portal").collection("users");
     const doctorCollection = client.db("doctors_portal").collection("doctors");
+    const paymentCollection = client
+      .db("doctors_portal")
+      .collection("payments");
 
     const verifyAdmin = async (req, res, next) => {
       const requester = req.decoded.email;
@@ -104,6 +138,18 @@ async function run() {
      * app.put('/booking/:id') // upsert => update (if exists) or insert (if doesn't exist)
      * app.delete('/booking/:id') //delete a booking
      */
+
+    app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+      const service = req.body;
+      const price = service.price;
+      const amount = price * 100;
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+      res.send({ clientSecret: paymentIntent.client_secret });
+    });
 
     app.get("/service", async (req, res) => {
       const query = {};
@@ -207,6 +253,31 @@ async function run() {
       //   booking.slot
       // );
       res.send({ success: true, result });
+    });
+
+    app.patch("/booking/:id", verifyJWT, async (req, res) => {
+      const id = req.params.id;
+      const payment = req.body;
+      const filter = { _id: ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          paid: true,
+          transactionId: payment.transactionId,
+        },
+      };
+      const updatedBooking = await bookingCollection.updateOne(
+        filter,
+        updatedDoc
+      );
+      const result = await paymentCollection.insertOne(payment);
+      res.send(updatedDoc);
+    });
+
+    app.get("/booking/:id", verifyJWT, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: ObjectId(id) };
+      const booking = await bookingCollection.findOne(query);
+      res.send(booking);
     });
 
     app.get("/doctor", verifyJWT, verifyAdmin, async (req, res) => {
